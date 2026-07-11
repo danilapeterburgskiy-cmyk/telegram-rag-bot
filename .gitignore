@@ -1,0 +1,69 @@
+# Виртуальное окружение
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Секреты и ключи
+.env
+.env.local
+.env.*.local
+*.env
+key.json
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Логи
+logs/
+*.log
+*.logs
+
+# Базы данных
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Документация (сырые файлы)
+docs/*.txt
+!docs/README.md
+
+# Временные файлы
+temp_voice.ogg
+index_id.txt
+assistant_id.txt
+*.tmp
+
+# Отчеты
+*.html
+*.xml
+*.json
+!requirements.txt
+
+# Selenium
+geckodriver.log
+chromedriver.log
+video/
