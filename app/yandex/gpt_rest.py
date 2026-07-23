@@ -10,6 +10,12 @@ class YandexGPT:
         self.folder_id = Config.YANDEX_FOLDER_ID
         self.api_key = Config.YANDEX_API_KEY
         self.history = {}
+        # Инициализируем SDK для _ask_gpt
+        from yandex_ai_studio_sdk import AIStudio
+        self.sdk = AIStudio(
+            folder_id=self.folder_id,
+            auth=self.api_key
+        )
 
     def _call_gpt(self, prompt: str, retries: int = 3) -> str:
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
@@ -21,7 +27,7 @@ class YandexGPT:
             "modelUri": f"gpt://{self.folder_id}/yandexgpt-lite",
             "completionOptions": {
                 "stream": False,
-                "temperature": 0.5,
+                "temperature": 0.3,
                 "maxTokens": 1000
             },
             "messages": [{"role": "user", "text": prompt}]
@@ -47,7 +53,6 @@ class YandexGPT:
         return None
 
     def _is_bitrix_question(self, question: str) -> bool:
-        """Определяет, относится ли вопрос к Bitrix24 API"""
         keywords = [
             'bitrix', 'задач', 'task', 'crm', 'сделка', 'лид', 'контакт',
             'api', 'rest', 'метод', 'параметр', 'токен', 'авторизаци',
@@ -56,19 +61,57 @@ class YandexGPT:
         question_lower = question.lower()
         return any(keyword in question_lower for keyword in keywords)
 
-    def ask(self, question: str, user_id: str = None) -> str:
-        docs_text = ""
+    def _load_docs(self):
+        doc_path = "docs/bitrix_api_full.txt"
+        if os.path.exists(doc_path):
+            with open(doc_path, "r", encoding="utf-8") as f:
+                return f.read()
         doc_path = "docs/bitrix_api.txt"
         if os.path.exists(doc_path):
             with open(doc_path, "r", encoding="utf-8") as f:
-                docs_text = f.read()
+                return f.read()
+        return ""
+
+    def _chunk_text(self, text: str, chunk_size: int = 3000) -> list:
+        chunks = []
+        words = text.split()
+        current_chunk = []
+        current_size = 0
+        
+        for word in words:
+            current_chunk.append(word)
+            current_size += len(word) + 1
+            if current_size >= chunk_size:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        
+        return chunks
+
+    def _search_relevant_chunks(self, question: str, chunks: list, top_k: int = 3) -> list:
+        question_words = set(question.lower().split())
+        scored_chunks = []
+        
+        for chunk in chunks:
+            chunk_words = set(chunk.lower().split())
+            score = len(question_words.intersection(chunk_words))
+            if score > 0:
+                scored_chunks.append((score, chunk))
+        
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+        return [chunk for _, chunk in scored_chunks[:top_k]]
+
+    def ask(self, question: str, user_id: str = None) -> str:
+        docs_text = self._load_docs()
         
         context = ""
         if user_id and user_id in self.history:
             last_q, last_a = self.history[user_id]
             context = f"Предыдущий вопрос: {last_q}\nПредыдущий ответ: {last_a}\n\n"
         
-        # Если вопрос НЕ про Bitrix24 — сразу отвечаем как нейросеть
         if not self._is_bitrix_question(question) and docs_text:
             prompt = f"""
 Ты — дружелюбный ассистент. Отвечай на вопрос человека.
@@ -85,47 +128,48 @@ class YandexGPT:
                 return answer
             return "🤔 Не удалось сформулировать ответ."
 
-        # Если вопрос про Bitrix24 — ищем в документации
         if docs_text:
-            prompt = f"""
+            chunks = self._chunk_text(docs_text, chunk_size=3000)
+            relevant_chunks = self._search_relevant_chunks(question, chunks, top_k=3)
+            
+            if relevant_chunks:
+                context_docs = "\n\n---\n\n".join(relevant_chunks)
+                
+                prompt = f"""
 Ты — эксперт по документации Bitrix24 REST API.
 
 Инструкция:
-1. Проверь, есть ли в документации ответ на вопрос.
-2. Если есть — используй ТОЛЬКО информацию из документации.
-3. Если нет — ответь как нейросеть, но скажи, что в документации этого нет.
+1. Используй ТОЛЬКО информацию из контекста для ответа.
+2. Если в контексте нет ответа — скажи: "В документации нет информации".
+3. Отвечай чётко, указывай названия методов и параметры.
+
+Контекст из документации:
+{context_docs}
 
 {context}
-
-Документация:
-{docs_text[:20000]}
 
 Вопрос: {question}
 
 Ответ:"""
+            else:
+                return self._ask_gpt(question)
         else:
-            prompt = f"""
-Ты — ассистент. Отвечай на вопрос.
-
-{context}
-
-Вопрос: {question}
-
-Ответ:"""
+            return self._ask_gpt(question)
         
         answer = self._call_gpt(prompt)
         
         if not answer:
-            # Если не удалось получить ответ — нейросеть
-            fallback_prompt = f"""
-Ты — дружелюбный ассистент. Отвечай на вопрос.
-
-Вопрос: {question}
-
-Ответ:"""
-            answer = self._call_gpt(fallback_prompt) or "❌ Не удалось получить ответ."
+            answer = self._ask_gpt(question)
         
         if user_id and answer:
             self.history[user_id] = (question, answer)
         
         return answer
+
+    def _ask_gpt(self, question: str) -> str:
+        try:
+            model = self.sdk.models.completions('yandexgpt-lite')
+            response = model.run(question)
+            return response.text
+        except Exception as e:
+            return f"❌ Ошибка: {e}"

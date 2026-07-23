@@ -6,6 +6,7 @@ from app.db.db import get_db
 from app.db.crud import get_or_create_user, save_message, get_user_history, clear_user_history
 from app.yandex.gpt_rest import YandexGPT
 from app.yandex.speech import SpeechRecognizer
+from app.yandex.assistant import YandexAssistant
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ class TelegramBot:
         self.app = Application.builder().token(Config.TELEGRAM_TOKEN).build()
         self.gpt = YandexGPT()
         self.speech = SpeechRecognizer()
+        self.assistant = YandexAssistant()
         self._register_handlers()
 
     def _register_handlers(self):
@@ -67,11 +69,9 @@ class TelegramBot:
         user = update.effective_user
         user_id = str(user.id)
         
-        # Очищаем историю в памяти бота
         if user_id in self.gpt.history:
             del self.gpt.history[user_id]
         
-        # Очищаем историю в БД
         db = next(get_db())
         clear_user_history(db, user.id)
         
@@ -108,12 +108,21 @@ class TelegramBot:
         logger.info(f"📩 Вопрос от {user.id}: {question[:50]}...")
         try:
             status_msg = await update.message.reply_text("🔍 Ищу ответ...")
-            answer = self.gpt.ask(question, user_id)
+            
+            # Сначала пробуем поискать по индексу
+            answer = self.assistant.ask_with_index(question)
+            
+            # Если индекс не дал ответа — используем GPT
+            if answer is None:
+                answer = self.gpt.ask(question, user_id)
+            
             if not answer or len(answer.strip()) < 5:
                 answer = "🤔 Не удалось сформулировать ответ."
+            
             db = next(get_db())
             db_user = get_or_create_user(db, user.id, user.username)
             save_message(db, db_user.id, question, answer)
+            
             await status_msg.delete()
             await update.message.reply_text(answer)
             logger.info("✅ Ответ отправлен")
