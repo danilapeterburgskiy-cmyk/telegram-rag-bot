@@ -1,7 +1,7 @@
 import os
-import json
-from yandex_ai_studio_sdk import AIStudio
+import re
 from app.config import Config
+from yandex_ai_studio_sdk import AIStudio
 
 class YandexAssistant:
     def __init__(self):
@@ -13,6 +13,7 @@ class YandexAssistant:
         self._load_existing_index()
 
     def _load_existing_index(self):
+        """Загружает индекс (для совместимости, но не используется)"""
         index_file = "index_id.txt"
         if os.path.exists(index_file):
             try:
@@ -25,6 +26,7 @@ class YandexAssistant:
                 print(f"⚠️ Ошибка загрузки индекса: {e}")
 
     def create_search_index(self, file_paths):
+        """Создание индекса (для совместимости)"""
         print("📚 Загрузка файлов в Yandex Cloud...")
         files = []
         for file_path in file_paths:
@@ -45,7 +47,7 @@ class YandexAssistant:
         from yandex_ai_studio_sdk.search_indexes import TextSearchIndexType
         index_type = TextSearchIndexType()
         operation = self.sdk.search_indexes.create_deferred(
-            *files,
+            files,
             index_type=index_type
         )
         self.search_index = operation.wait()
@@ -54,38 +56,70 @@ class YandexAssistant:
             f.write(self.search_index.id)
         print(f"✅ Индекс создан: {self.search_index.id}")
 
-    def search(self, question: str, limit: int = 5):
-        """Поиск по индексу"""
-        if not self.search_index:
-            return []
+    def _chunk_text(self, text: str, chunk_size: int = 3000) -> list:
+        """Разбивает текст на чанки"""
+        words = text.split()
+        chunks = []
+        current = []
+        size = 0
         
-        try:
-            if hasattr(self.search_index, 'query'):
-                return self.search_index.query(question, limit=limit)
-            elif hasattr(self.search_index, 'search'):
-                return self.search_index.search(question, limit=limit)
-            elif hasattr(self.search_index, 'find'):
-                return self.search_index.find(question, limit=limit)
-            else:
-                return []
-        except Exception as e:
-            print(f"⚠️ Ошибка поиска: {e}")
-            return []
+        for word in words:
+            current.append(word)
+            size += len(word) + 1
+            if size >= chunk_size:
+                chunks.append(" ".join(current))
+                current = []
+                size = 0
+        
+        if current:
+            chunks.append(" ".join(current))
+        return chunks
+
+    def _search_relevant_chunks(self, question: str, chunks: list, top_k: int = 5) -> list:
+        """Ищет релевантные чанки по ключевым словам"""
+        question_words = set(re.sub(r'[^\w\s]', '', question.lower()).split())
+        scored = []
+        
+        for chunk in chunks:
+            chunk_words = set(re.sub(r'[^\w\s]', '', chunk.lower()).split())
+            score = len(question_words.intersection(chunk_words))
+            if score > 0:
+                scored.append((score, chunk))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [chunk for _, chunk in scored[:top_k]]
 
     def ask_with_index(self, question: str) -> str:
-        """Поиск по индексу + генерация ответа через Yandex GPT"""
-        if not self.search_index:
+        """Локальный RAG: поиск по файлу + генерация через GPT"""
+        doc_path = "docs/bitrix_api_full.txt"
+        if not os.path.exists(doc_path):
+            print("⚠️ Файл документации не найден")
             return None
         
-        results = self.search(question)
-        if not results:
+        try:
+            with open(doc_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            print(f"⚠️ Ошибка чтения: {e}")
             return None
         
-        context = "\n\n---\n\n".join([r.text for r in results])
+        # Разбиваем на чанки
+        chunks = self._chunk_text(text, chunk_size=3000)
+        print(f"📚 Создано {len(chunks)} чанков")
+        
+        # Ищем релевантные
+        relevant = self._search_relevant_chunks(question, chunks, top_k=5)
+        print(f"🔍 Найдено {len(relevant)} релевантных чанков")
+        
+        if not relevant:
+            return None
+        
+        context = "\n\n---\n\n".join(relevant)
         
         prompt = f"""
-Ты — эксперт по документации Bitrix24 API.
-Ответь на вопрос, используя ТОЛЬКО контекст.
+Ты — эксперт по документации Bitrix24 REST API.
+Ответь на вопрос, используя ТОЛЬКО информацию из контекста.
+Если в контексте нет ответа — скажи: "В документации нет информации".
 
 Контекст:
 {context}
@@ -99,5 +133,5 @@ class YandexAssistant:
             response = model.run(prompt)
             return response.text
         except Exception as e:
-            print(f"⚠️ Ошибка генерации: {e}")
+            print(f"⚠️ Ошибка GPT: {e}")
             return None
