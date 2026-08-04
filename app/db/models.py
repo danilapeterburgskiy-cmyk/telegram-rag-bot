@@ -7,21 +7,25 @@ Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)  # Используем BIGINT
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
-    
     messages = relationship("Message", back_populates="user")
 
 class Message(Base):
     __tablename__ = "messages"
-    
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
     user = relationship("User", back_populates="messages")
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+    id = Column(Integer, primary_key=True)
+    text = Column(Text, nullable=False)
+    file_id = Column(String(100))
+    index_id = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)

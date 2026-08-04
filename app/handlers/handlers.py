@@ -4,9 +4,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from app.config import Config
 from app.db.db import get_db
 from app.db.crud import get_or_create_user, save_message, get_user_history, clear_user_history
-from app.yandex.gpt_rest import YandexGPT
-from app.yandex.speech import SpeechRecognizer
 from app.yandex.assistant import YandexAssistant
+from app.yandex.speech import SpeechRecognizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 class TelegramBot:
     def __init__(self):
         self.app = Application.builder().token(Config.TELEGRAM_TOKEN).build()
-        self.gpt = YandexGPT()
         self.speech = SpeechRecognizer()
         self.assistant = YandexAssistant()
         self._register_handlers()
@@ -34,24 +32,10 @@ class TelegramBot:
             await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        db = next(get_db())
-        get_or_create_user(db, user.id, user.username)
-        await update.message.reply_text(
-            "👋 Привет! Я бот по документации Bitrix24 API.\n\n"
-            "📌 Отправь вопрос текстом или голосом.\n"
-            "📌 /history — последние вопросы\n"
-            "📌 /clear — очистить историю"
-        )
+        await update.message.reply_text("👋 RAG-бот Bitrix24 на Yandex Cloud. Задай вопрос по API.")
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "🆘 Команды:\n\n"
-            "/start — приветствие\n"
-            "/help — справка\n"
-            "/history — последние вопросы\n"
-            "/clear — очистить историю"
-        )
+        await update.message.reply_text("/start, /help, /history, /clear")
 
     async def history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -67,15 +51,9 @@ class TelegramBot:
 
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        user_id = str(user.id)
-        
-        if user_id in self.gpt.history:
-            del self.gpt.history[user_id]
-        
         db = next(get_db())
         clear_user_history(db, user.id)
-        
-        await update.message.reply_text("🧹 История полностью очищена!")
+        await update.message.reply_text("🧹 История очищена!")
 
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🎤 Распознаю...")
@@ -83,52 +61,37 @@ class TelegramBot:
             voice = await update.message.voice.get_file()
             voice_bytes = await voice.download_as_bytearray()
             text = self.speech.recognize(voice_bytes)
+            await status_msg.delete()
             if "❌" in text:
-                await status_msg.delete()
                 await update.message.reply_text(text)
                 return
-            await status_msg.delete()
             await update.message.reply_text(f"🎤 Вы сказали: {text}")
             user = update.effective_user
-            user_id = str(user.id)
-            answer = self.gpt.ask(text, user_id)
+            answer = self.assistant.ask(text)
             db = next(get_db())
             db_user = get_or_create_user(db, user.id, user.username)
             save_message(db, db_user.id, text, answer)
             await update.message.reply_text(answer)
         except Exception as e:
-            logger.error(f"❌ Ошибка голоса: {e}")
+            logger.error(f"Голос: {e}")
             await status_msg.delete()
-            await update.message.reply_text("❌ Не удалось обработать голосовое.")
+            await update.message.reply_text("❌ Ошибка")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         question = update.message.text
         user = update.effective_user
-        user_id = str(user.id)
-        logger.info(f"📩 Вопрос от {user.id}: {question[:50]}...")
+        
+        await update.message.reply_text("🔍 Поиск в Yandex Cloud...")
+        
         try:
-            status_msg = await update.message.reply_text("🔍 Ищу ответ...")
-            
-            # Сначала пробуем поискать по индексу
-            answer = self.assistant.ask_with_index(question)
-            
-            # Если индекс не дал ответа — используем GPT
-            if answer is None:
-                answer = self.gpt.ask(question, user_id)
-            
-            if not answer or len(answer.strip()) < 5:
-                answer = "🤔 Не удалось сформулировать ответ."
-            
+            answer = self.assistant.ask(question)
             db = next(get_db())
             db_user = get_or_create_user(db, user.id, user.username)
             save_message(db, db_user.id, question, answer)
-            
-            await status_msg.delete()
             await update.message.reply_text(answer)
-            logger.info("✅ Ответ отправлен")
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}", exc_info=True)
-            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+            logger.error(f"Ошибка: {e}")
+            await update.message.reply_text(f"❌ {e}")
 
     def run(self):
         print("🤖 Бот запущен!")
