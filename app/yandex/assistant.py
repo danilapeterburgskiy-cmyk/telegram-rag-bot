@@ -12,14 +12,39 @@ class YandexAssistant:
             auth=Config.YANDEX_API_KEY
         )
         self.docs_path = "docs/bitrix_api_full.txt"
+        self.chunks = []
         self._load_chunks_from_db()
+        if not self.chunks:
+            self._save_chunks_to_db()
 
     def _load_chunks_from_db(self):
-        """Загружает чанки из БД"""
         db = next(get_db())
         self.chunks = [chunk.text for chunk in db.query(Chunk).all()]
         if self.chunks:
             print(f"✅ Загружено {len(self.chunks)} чанков из БД")
+
+    def _save_chunks_to_db(self):
+        if not os.path.exists(self.docs_path):
+            print("⚠️ Файл документации не найден")
+            return
+        
+        with open(self.docs_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        
+        chunk_size = 3000
+        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+        
+        db = next(get_db())
+        for i, chunk_text in enumerate(chunks):
+            chunk = Chunk(
+                text=chunk_text,
+                file_id=f'local_{i}',
+                index_id='local'
+            )
+            db.add(chunk)
+        db.commit()
+        self.chunks = chunks
+        print(f"✅ Сохранено {len(chunks)} чанков в БД")
 
     def _chunk_text(self, text: str, chunk_size: int = 3000) -> list:
         words = text.split()
@@ -35,7 +60,6 @@ class YandexAssistant:
         return chunks
 
     def _search_relevant_chunks(self, question: str, top_k: int = 5) -> list:
-        """Ищет релевантные чанки по ключевым словам"""
         if not self.chunks:
             return []
         
@@ -50,23 +74,14 @@ class YandexAssistant:
         return [chunk for _, chunk in scored[:top_k]]
 
     def ask(self, question: str) -> str:
-        """RAG с локальным поиском и генерацией через LLM"""
-        # Если чанков нет в БД — загружаем из файла
         if not self.chunks:
-            if not os.path.exists(self.docs_path):
-                return "❌ Документация не найдена"
-            with open(self.docs_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            self.chunks = self._chunk_text(text, 3000)
-            print(f"📚 Загружено {len(self.chunks)} чанков из файла")
+            return "❌ Нет чанков в БД"
         
         relevant = self._search_relevant_chunks(question, 5)
-        
         if not relevant:
             return "❌ Не нашёл информации по вашему вопросу."
         
         context = "\n\n---\n\n".join(relevant)
-        
         prompt = f"""
 Ты — эксперт по документации Bitrix24 API.
 Ответь на вопрос, используя ТОЛЬКО информацию из контекста.
