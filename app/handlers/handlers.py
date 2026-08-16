@@ -1,4 +1,5 @@
 import logging
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from app.config import Config
@@ -32,7 +33,7 @@ class TelegramBot:
             await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("👋 RAG-бот Bitrix24 на Yandex Cloud. Задай вопрос по API.")
+        await update.message.reply_text("👋 RAG-бот Bitrix24 с Yandex Cloud. Задай вопрос по API.")
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/start, /help, /history, /clear")
@@ -47,6 +48,13 @@ class TelegramBot:
         text = "📜 Последние вопросы:\n\n"
         for msg in messages:
             text += f"❓ {msg.question[:50]}...\n"
+            if msg.sources:
+                try:
+                    sources = json.loads(msg.sources)
+                    if sources:
+                        text += f"   📎 {sources[0][:80]}\n"
+                except:
+                    pass
         await update.message.reply_text(text)
 
     async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,7 +75,7 @@ class TelegramBot:
                 return
             await update.message.reply_text(f"🎤 Вы сказали: {text}")
             user = update.effective_user
-            answer = self.assistant.ask(text)
+            answer = self.assistant.ask(text, user.id)
             db = next(get_db())
             db_user = get_or_create_user(db, user.id, user.username)
             save_message(db, db_user.id, text, answer)
@@ -84,7 +92,7 @@ class TelegramBot:
         await update.message.reply_text("🔍 Поиск в Yandex Cloud...")
         
         try:
-            answer = self.assistant.ask(question)
+            answer = self.assistant.ask(question, user.id)
             db = next(get_db())
             db_user = get_or_create_user(db, user.id, user.username)
             save_message(db, db_user.id, question, answer)
